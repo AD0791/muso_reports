@@ -2,7 +2,7 @@
 title: "Tracking des coordonnées GPS des groupes actifs de MUSO"
 subtitle: |
   | Caris Foundation International | Impact Youth Project
-author: "Fannéty GUERCIN | M&E Officer"
+author: "Alexandro DISLA | M&E Officer"
 date: '`r format(Sys.time(), "%d %B %Y")`'
 output: 
   prettydoc::html_pretty:
@@ -49,6 +49,13 @@ suppressPackageStartupMessages(library(data.table))
 suppressPackageStartupMessages(library(kableExtra))
 suppressPackageStartupMessages(library(readxl))
 suppressPackageStartupMessages(library(reticulate))
+suppressPackageStartupMessages(library(sf))
+suppressPackageStartupMessages(library(tmap))
+
+
+use_python('/usr/local/opt/python@3.10/bin/python3')
+
+loadfonts()
 ```
 
 
@@ -74,8 +81,8 @@ from dotenv import load_dotenv
 ```{python,include=FALSE, eval = TRUE}
 #Connecting to Commcare
 load_dotenv('id_cc.env')
-email = os.getenv('Commcare_Impact_Mail')
-password_cc = os.getenv('Commcare_Impact_PW')
+email = os.getenv('COMCARE_EMAIL')
+password_cc = os.getenv('COMCARE_PASSWORD')
 
 #Defining the driver
 driver = webdriver.Chrome(ChromeDriverManager().install())
@@ -86,15 +93,15 @@ def commcare_login():
     driver.get(
         'https://www.commcarehq.org/a/caris-test/data/export/custom/new/case/download/c6bf8477aadc01e8034f62066beb0a6d/'
     )
-    driver.find_element_by_xpath('//*[@id="id_auth-username"]').send_keys(email)
-    driver.find_element_by_xpath('//*[@id="id_auth-password"]').send_keys(password_cc)
-    driver.find_element_by_css_selector('button[type=submit]').click()
+    driver.find_element(By.XPATH,'//*[@id="id_auth-username"]').send_keys(email)
+    driver.find_element(By.XPATH,'//*[@id="id_auth-password"]').send_keys(password_cc)
+    driver.find_element(By.CSS_SELECTOR,'button[type=submit]').click()
        
 commcare_login()
 
 #Download the database "Muso_groupes_GPS"
-driver.find_element_by_xpath('//*[@id="download-export-form"]/form/div[2]/div/div[2]/div[1]/button/span[1]').click()
-driver.find_element_by_xpath('//*[@id="download-progress"]/div/div/div[2]/div[1]/form/a/span[1]').click()
+driver.find_element(By.XPATH,'//*[@id="download-export-form"]/form/div[2]/div/div[2]/div[1]/button/span[1]').click()
+driver.find_element(By.XPATH,'//*[@id="download-progress"]/div/div/div[2]/div[1]/form/a/span[1]').click()
 
 ```
 
@@ -563,6 +570,10 @@ ggplotly(df_muso %>%
 ### **Fig.2 Distribution des bureaux avec des codes GPS déjà saisis ou non**
 
 
+
+
+
+
 ```{r,fig.height=6, fig.width=8}
 
 df_muso1<-df_muso%>%
@@ -580,6 +591,30 @@ df_muso2<-df_muso%>%
 
 #df_muso_join<-rbind(df_muso1,df_muso2)
 
+#df_muso%>%
+#  filter(!is.na(code_GPS))%>%
+#  group_by(office_name,code_GPS)%>%
+#  count()%>%
+#  group_by(office_name)%>%
+#  mutate(proc = (n/sum(n) * 100))%>%
+#  ggplot(aes(fill=code_GPS, y=n, x=reorder(office_name,-n))) + 
+#  geom_bar(stat="identity",color="black",show.legend = T) +
+#  geom_label(aes(label = paste(paste(format(n,big.mark = ",")),sep=" ",
+#                               paste("(",sep="",round(proc,0),"%)"))),
+#             position =  position_stack(vjust = 0.5), show.legend = F,color='white', size=3.2)+
+#  scale_fill_brewer(palette = "Dark2")+
+#  ggtitle(" ")+
+#  labs(caption=paste("Data source: CommCare",sep = " / ", Sys.Date()))+
+#  theme_bw()+
+#  theme(
+#    plot.title = element_text(color = "black", size = 13, family="cambria", face = "bold",hjust=0.5,vjust=0.8),
+#    plot.caption = element_text(face="italic",size = 10),
+#    axis.text.x = element_text(size = 12,family="Cambria"),
+#    axis.title.y = element_text(size = 12,family = "Cambria"),
+#    strip.text = element_text(size = 12))+
+#  xlab("")+
+#  ylab("")
+
 df_muso%>%
   filter(!is.na(code_GPS))%>%
   group_by(office_name,code_GPS)%>%
@@ -596,10 +631,10 @@ df_muso%>%
   labs(caption=paste("Data source: CommCare",sep = " / ", Sys.Date()))+
   theme_bw()+
   theme(
-    plot.title = element_text(color = "black", size = 13, family="cambria", face = "bold",hjust=0.5,vjust=0.8),
+    plot.title = element_text(color = "black", size = 13,  face = "bold",hjust=0.5,vjust=0.8),
     plot.caption = element_text(face="italic",size = 10),
-    axis.text.x = element_text(size = 12,family="Cambria"),
-    axis.title.y = element_text(size = 12,family = "Cambria"),
+    axis.text.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
     strip.text = element_text(size = 12))+
   xlab("")+
   ylab("")
