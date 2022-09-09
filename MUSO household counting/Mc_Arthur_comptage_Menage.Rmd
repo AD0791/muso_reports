@@ -1,0 +1,886 @@
+---
+title: "Suivi de Comptage de Ménage chez les Membres Actifs de MUSO "
+subtitle: |
+  | Caris Foundation International | Impact Youth Project
+author: "Lucainson RAYMOND | M&E Officer"
+date: '`r format(Sys.time(), "%d %B %Y")`'
+output: 
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+    toc: yes
+    toc_depth: 4
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,message=FALSE,warning = FALSE)
+```
+
+
+<style>
+body{
+text-align: justify
+}
+</style>
+
+
+
+```{r libraries}
+Sys.setenv(TZ='GMT')
+suppressPackageStartupMessages(library(RMySQL))
+suppressPackageStartupMessages(library(odbc))
+suppressPackageStartupMessages(library(DBI))
+suppressPackageStartupMessages(library(viridis))
+suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(ggiraphExtra))
+suppressPackageStartupMessages(library(hrbrthemes))
+suppressPackageStartupMessages(library(plotly))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(igraph))
+suppressPackageStartupMessages(library(extrafont))
+suppressPackageStartupMessages(library(ggraph))
+suppressPackageStartupMessages(library(DT))
+suppressPackageStartupMessages(library(lubridate))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(kableExtra))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(reticulate))
+```
+
+
+
+
+```{python,eval=TRUE}
+#Import relevant libraries
+import pandas as pd
+import numpy as np
+from datetime import datetime 
+from selenium import webdriver
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
+import time
+import os
+from dotenv import load_dotenv
+```
+
+
+
+
+
+```{python,include=FALSE,eval=TRUE}
+#Connecting to Commcare
+load_dotenv('id_cc.env')
+email = os.getenv('EMAIL')
+password_cc = os.getenv('PASSWORD')
+
+#Defining the driver
+driver = webdriver.Chrome(ChromeDriverManager().install())
+driver.implicitly_wait(1000)
+
+#Creating login function
+def commcare_login():
+    driver.get(
+        'https://www.commcarehq.org/a/caris-test/data/export/custom/new/form/download/0e047316540ad4a8e0d17126d3865538/'
+    )
+    driver.find_element_by_xpath('//*[@id="id_auth-username"]').send_keys(email)
+    driver.find_element_by_xpath('//*[@id="id_auth-password"]').send_keys(password_cc)
+    driver.find_element_by_css_selector('button[type=submit]').click()
+       
+commcare_login()
+
+#Download the database "household_MUSO"
+driver.find_element_by_xpath('//*[@id="download-export-form"]/form/div[2]/div/div[2]/div[1]/button/span[1]').click()
+driver.find_element_by_xpath('//*[@id="download-progress"]/div/div/div[2]/div[1]/form/a/span[1]').click()
+
+```
+
+
+
+
+
+
+```{r instrumentalisation, eval=TRUE}
+#Extracting the viral load data from caris_db
+    instrument=dbSendQuery(
+      dbConnect(MySQL(), user='caris_readonly', password='longlivecaris', dbname='caris_db', host='mysql.hivhaiti.org'),
+      "SELECT 
+    IF(lh.id IS NOT NULL,
+        CONCAT(lh.city_code, '/', lh.hospital_code),
+        CONCAT(pt.city_code, '/', pt.hospital_code)) AS site,
+    IF(lh.id IS NOT NULL, lh.name, lh2.name) AS hospital_name,
+    IF(lh.id IS NOT NULL, lh.id, lh2.id) AS id_hospital,
+    pt.patient_code,
+    a.*,
+    carer_name,
+    carer_address,
+    carer_telephone,
+    COALESCE(location, gps, '') gps,
+    IF(ti.gender = 1,
+        'M',
+        IF(ti.gender = 2, 'F', ti.gender)) AS sex,
+    ti.dob AS date_of_birth,
+    ti.is_abandoned,
+    ti.is_dead,
+    ti.first_name,
+    ti.last_name,
+    ti.why_this_child_does_not_belong_to_a_club as reason_id,
+  CASE
+  WHEN ti.why_this_child_does_not_belong_to_a_club = 1 THEN 'N’était pas au courant du club'
+  WHEN ti.why_this_child_does_not_belong_to_a_club = 2 THEN 'Distance/ Proximité (clubs trop loin)'
+  WHEN ti.why_this_child_does_not_belong_to_a_club = 3 THEN 'Incompatibilité d_horaire'
+  WHEN ti.why_this_child_does_not_belong_to_a_club = 4 THEN 'Raison économique'
+  WHEN ti.why_this_child_does_not_belong_to_a_club = 5 THEN 'Stigmatisation'
+  WHEN ti.why_this_child_does_not_belong_to_a_club = 6 THEN 'Dénie (n’accepte pas son statut)+'
+  WHEN ti.why_this_child_does_not_belong_to_a_club = 8 THEN 'Partenaire n’est pas au courant de son statut'
+  WHEN ti.why_this_child_does_not_belong_to_a_club = 7 THEN 'Autres'
+  END AS why_this_child_does_not_belong_to_a_club_definition,
+  ti.this_child_does_not_belong_to_a_club_reason_other as this_child_does_not_belong_to_a_club_reason_other,
+    IF(cb.id_patient IS NULL, 'NO', 'YES') AS in_club,
+    CASE
+        WHEN cb.club_type = 2 THEN 'club_9_12'
+        WHEN cb.club_type = 3 THEN 'club_13_17'
+        WHEN cb.club_type = 4 THEN 'club_18+'
+        WHEN cb.club_type = 5 THEN 'club_3_5'
+        WHEN cb.club_type = 6 THEN 'club_6_8'
+        ELSE 'not_in_club'
+    END AS club_type,
+    b.took_viral_load_test,
+    b.viral_load_indetectable,
+    b.viral_load_count,
+    b1.viral_load_count AS prev_viral_load_count,
+    last_viral_load_collection_date,
+    inh_initiation_date,
+    inh_completion_date,
+    IF((b.viral_load_indetectable
+            OR b.viral_load_count < 1000),
+        'OUI',
+        IF(b.viral_load_count >= 1000,
+            'NON',
+            b.viral_load_count)) AS indetectable_ou_inf_1000,
+    arv.start_date AS arv_start_date,
+    arv.regime,
+    arv.all_start_date AS all_arv_start_date,
+    arv.all_end_date AS all_arv_end_date,
+    actual_arv.regime as actual_arv_regime,
+    b1.viral_load_date AS prev_viral_load_date,
+    b.viral_load_date,
+    IF((b.viral_load_indetectable
+            OR b.viral_load_count < 1000),
+        DATE_ADD(b.viral_load_date,
+            INTERVAL 1 YEAR),
+        IF(b.viral_load_count >= 1000,
+            DATE_ADD(b.viral_load_date,
+                INTERVAL 6 MONTH),
+            'on ne sait pas')) AS next_viral_load_date,
+    IF(((b.took_viral_load_test IS NULL)
+            OR b.took_viral_load_test = 0),
+        IF(((TIMESTAMPDIFF(MONTH,
+                arv.start_date,
+                NOW()) < 6)
+                OR (arv.start_date IS NULL)),
+            'NO',
+            'YES'),
+        IF(((b.viral_load_indetectable
+                OR b.viral_load_count < 1000)
+                AND DATE_ADD(b.viral_load_date,
+                INTERVAL 1 YEAR) < NOW())
+                OR (b.viral_load_count >= 1000
+                AND DATE_ADD(b.viral_load_date,
+                INTERVAL 6 MONTH) < NOW()),
+            'YES',
+            'NO')) AS eligibility,
+    c.last_session_date,
+    TIMESTAMPDIFF(YEAR, ti.dob, NOW()) AS age,
+    IF(TIMESTAMPDIFF(YEAR, ti.dob, NOW()) BETWEEN 9 AND 12,
+        'OUI',
+        'NON') AS '9-12',
+    IF(TIMESTAMPDIFF(YEAR, ti.dob, NOW()) BETWEEN 13 AND 17,
+        'OUI',
+        'NON') AS '13-17',
+    IF(TIMESTAMPDIFF(YEAR, ti.dob, NOW()) >= 18,
+        'OUI',
+        'NON') AS '18+',
+    tf.date AS last_followup_date,
+    tf.next_appointment_date,
+    CASE
+        WHEN
+            TIMESTAMPDIFF(DAY,
+                tf.date,
+                next_appointment_date) <= 35
+        THEN
+            'MMS_0_35'
+        WHEN
+            TIMESTAMPDIFF(DAY,
+                tf.date,
+                next_appointment_date) >= 36
+                AND TIMESTAMPDIFF(DAY,
+                tf.date,
+                next_appointment_date) <= 89
+        THEN
+            'MMS_36_89'
+        WHEN
+            TIMESTAMPDIFF(DAY,
+                tf.date,
+                next_appointment_date) >= 90
+                AND TIMESTAMPDIFF(DAY,
+                tf.date,
+                next_appointment_date) <= 120
+        THEN
+            'MMS_90_120'
+        WHEN
+            TIMESTAMPDIFF(DAY,
+                tf.date,
+                next_appointment_date) >= 121
+                AND TIMESTAMPDIFF(DAY,
+                tf.date,
+                next_appointment_date) <= 180
+        THEN
+            'MMS_121_180'
+        ELSE 'MMS_>_180'
+    END AS MMS,
+    IF(TIMESTAMPDIFF(MONTH,
+            tf.next_appointment_date,
+            NOW()) > 6,
+        'Yes',
+        'No') AS 'LTFU 6months',
+    IF(TIMESTAMPDIFF(DAY,
+            tf.next_appointment_date,
+            NOW()) > 30,
+        'Yes',
+        'No') AS 'LTFU 30days',
+    IF(pcr.id_patient IS NULL, 'No', 'Yes') AS is_positive_by_pcr,
+    wh.weight,
+    wh.date AS weight_date,
+    ln.name as network,
+	IF(ugp.id IS NOT NULL, 'Yes', 'No') AS is_ugp,
+    lhl.office
+FROM
+    (SELECT 
+        id AS id_patient
+    FROM
+        view_patient_positive UNION (SELECT 
+        id_patient
+    FROM
+        tracking_regime t_reg
+    WHERE
+        t_reg.category = 'regime_infant_treatment') UNION (SELECT 
+        id_patient
+    FROM
+        club_patient cp
+    LEFT JOIN club c ON c.id = cp.id_club
+    WHERE
+        c.club_type != 1)) a
+        LEFT JOIN
+    (SELECT 
+        id_patient, name AS club_name, club_type
+    FROM
+        club_patient cp
+    LEFT JOIN club c ON c.id = cp.id_club
+    WHERE
+        c.club_type != 1) cb ON a.id_patient = cb.id_patient
+        LEFT JOIN
+    tracking_infant ti ON ti.id_patient = a.id_patient
+        LEFT JOIN
+    lookup_hospital lh ON lh.id = ti.id_hospital
+        LEFT JOIN
+    (SELECT 
+        id,
+            id_patient,
+            took_viral_load_test,
+            viral_load_indetectable,
+            viral_load_count,
+            viral_load_date
+    FROM
+        tracking_followup tf1
+    WHERE
+        took_viral_load_test
+            AND tf1.viral_load_date = (SELECT 
+                MAX(tf2.viral_load_date)
+            FROM
+                tracking_followup tf2
+            WHERE
+                tf1.id_patient = tf2.id_patient)
+    GROUP BY tf1.id_patient) b ON b.id_patient = a.id_patient
+        LEFT JOIN
+    (SELECT 
+        id,
+            id_patient,
+            took_viral_load_test,
+            viral_load_indetectable,
+            viral_load_count,
+            viral_load_date
+    FROM
+        tracking_followup tf1
+    WHERE
+        took_viral_load_test
+            AND tf1.viral_load_date = (SELECT 
+                MAX(tf2.viral_load_date)
+            FROM
+                tracking_followup tf2
+            WHERE
+                tf1.id_patient = tf2.id_patient
+                    AND tf2.viral_load_date < (SELECT 
+                        MAX(tf3.viral_load_date)
+                    FROM
+                        tracking_followup tf3
+                    WHERE
+                        tf3.id_patient = tf1.id_patient))
+    GROUP BY tf1.id_patient) b1 ON b1.id_patient = a.id_patient
+        LEFT JOIN
+    (SELECT 
+        patient.id, odk_child_visit.patient_code, location, gps
+    FROM
+        caris_db.odk_child_visit
+    LEFT JOIN patient ON patient.patient_code = odk_child_visit.patient_code
+    WHERE
+        location IS NOT NULL OR gps != ''
+    GROUP BY odk_child_visit.patient_code) odk ON odk.id = a.id_patient
+        LEFT JOIN
+    (SELECT 
+        id_patient,
+            inh_eligibility,
+            is_on_inh,
+            inh_initiation_date,
+            inh_length,
+            is_inh_completed,
+            inh_completion_date
+    FROM
+        tracking_followup t1
+    WHERE
+        inh_eligibility
+            AND inh_initiation_date IS NOT NULL
+    GROUP BY t1.id_patient) inh ON a.id_patient = inh.id_patient
+        LEFT JOIN
+    (SELECT 
+        ss.id_patient,
+            ss.is_present,
+            MAX(cs.date) AS last_session_date
+    FROM
+        (SELECT 
+        id_patient, id_club_session, is_present
+    FROM
+        session
+    WHERE
+        is_present AND id_patient) ss
+    LEFT JOIN club_session cs ON ss.id_club_session = cs.id
+    GROUP BY ss.id_patient) c ON c.id_patient = a.id_patient
+        LEFT JOIN
+    (SELECT 
+        id_patient,
+            MIN(IF(start_date != '0000-00-00', start_date, NULL)) AS start_date,
+            GROUP_CONCAT(la.acronym
+                SEPARATOR '-') AS regime,
+            GROUP_CONCAT(tr.start_date
+                SEPARATOR ' | ') AS all_start_date,
+            GROUP_CONCAT(tr.end_date
+                SEPARATOR ' | ') AS all_end_date
+    FROM
+        tracking_regime tr
+    LEFT JOIN lookup_arv la ON la.id = tr.id_arv
+    WHERE
+        category = 'regime_infant_treatment'
+    GROUP BY id_patient) arv ON arv.id_patient = a.id_patient
+        LEFT JOIN
+        
+            (SELECT 
+        id_patient,
+            MIN(IF(start_date != '0000-00-00', start_date, NULL)) AS start_date,
+            GROUP_CONCAT(la.acronym
+                SEPARATOR '-') AS regime,
+            GROUP_CONCAT(tr.start_date
+                SEPARATOR ' | ') AS all_start_date,
+            GROUP_CONCAT(tr.end_date
+                SEPARATOR ' | ') AS all_end_date
+    FROM
+        tracking_regime tr
+    LEFT JOIN lookup_arv la ON la.id = tr.id_arv
+    WHERE
+        category = 'regime_infant_treatment' and tr.end_date='0000-00-00'
+    GROUP BY id_patient) actual_arv ON actual_arv.id_patient = a.id_patient
+        LEFT JOIN
+        
+        
+    (SELECT 
+        tf1.id_patient, tf1.date, tf1.next_appointment_date
+    FROM
+        tracking_followup tf1
+    WHERE
+        tf1.date = (SELECT 
+                MAX(tf2.date)
+            FROM
+                tracking_followup tf2
+            WHERE
+                tf1.id_patient = tf2.id_patient)
+    GROUP BY tf1.id_patient) tf ON tf.id_patient = a.id_patient
+        LEFT JOIN
+    patient pt ON pt.id = a.id_patient
+        LEFT JOIN
+    lookup_hospital lh2 ON CONCAT(lh2.city_code, '/', lh2.hospital_code) = CONCAT(pt.city_code, '/', pt.hospital_code)
+        LEFT JOIN
+    (SELECT 
+        id_patient
+    FROM
+        tracking_motherbasicinfo) tm ON tm.id_patient = a.id_patient
+        LEFT JOIN
+    ((SELECT 
+        id_patient
+    FROM
+        testing_specimen
+    WHERE
+        pcr_result = 1) UNION (SELECT 
+        id_patient
+    FROM
+        testing_result
+    WHERE
+        result = 1)) pcr ON pcr.id_patient = a.id_patient
+        LEFT JOIN
+    (SELECT 
+        id_patient, tf1.weight, tf1.date
+    FROM
+        tracking_followup tf1
+    WHERE
+        tf1.weight > 0
+            AND tf1.date = (SELECT 
+                MAX(tf2.date)
+            FROM
+                tracking_followup tf2
+            WHERE
+                tf2.id_patient = tf1.id_patient
+                    AND tf2.weight > 0)
+    GROUP BY tf1.id_patient) wh ON wh.id_patient = a.id_patient
+    
+  LEFT JOIN
+    (SELECT
+        tf.id_patient,
+            MAX(tf.viral_load_collection_date) AS last_viral_load_collection_date
+    FROM
+        tracking_followup tf
+    WHERE
+        viral_load_collection_date != '0000-00-00'
+    GROUP BY id_patient) vcd ON vcd.id_patient = a.id_patient
+    
+    
+    left join lookup_hospital lhl on concat(lhl.city_code,'/',lhl.hospital_code)=IF(lh.id IS NOT NULL,
+    CONCAT(lh.city_code, '/', lh.hospital_code),
+    CONCAT(pt.city_code, '/', pt.hospital_code))
+    left join lookup_network ln on ln.id=lhl.network
+            LEFT JOIN
+    hospital_network ugp ON ugp.id_hospital = lhl.id
+        AND ugp.id_network = 7
+    
+WHERE
+    (ti.is_dead != 1 OR (ti.is_dead IS NULL))
+--         AND (ti.is_abandoned != 1
+--         OR (ti.is_abandoned IS NULL)
+--         OR (cb.id_patient IS NOT NULL))
+        AND (pt.linked_to_id_patient = 0)
+        AND (tm.id_patient IS NULL)
+
+ORDER BY IF(lh.id IS NOT NULL,
+    CONCAT(lh.city_code, '/', lh.hospital_code),
+    CONCAT(pt.city_code, '/', pt.hospital_code))
+    
+      LIMIT 100000000")
+  
+
+    
+    instrument_df = fetch(instrument, n=-1)
+    
+```
+
+
+
+
+
+```{python,eval=FALSE}
+#Quitting the driver
+driver.quit()
+```
+
+
+
+
+
+```{r}
+#Sheet 1
+part1="C:/Users/Lucainson Raymond/Downloads/"
+part2="MUSO - Members - Ajout des menages "
+df_muso_men1<-read_excel(paste(part1,part2,sep="",Sys.Date(),".xlsx"),sheet = 1)
+
+lookup<-read_excel('C:\\Users\\Lucainson Raymond\\Desktop\\lookup_caris\\caris-test_users_muso.xlsx')%>%
+  select(username,name,data_office,`Nbre de groupe`,`Nbre de membre Total dans les groupes`)
+
+lookup_muso<-lookup%>%
+  select(username,name,data_office)
+
+df_muso_men1<-df_muso_men1%>%
+  select(started_time,username,`form.case.@case_id`)%>%
+  rename(username=username)%>%
+  rename(caseid=`form.case.@case_id`)
+
+df_men1<-left_join(df_muso_men1,lookup_muso,by='username')%>%
+  select(name,data_office,username,caseid,started_time)%>%
+  distinct(caseid, .keep_all = TRUE)
+
+
+df_men1$started_time<-as.Date(df_men1$started_time)
+```
+
+
+
+
+
+```{r}
+a<-min(df_men1$started_time)
+b<-length(unique(df_men1$caseid))
+```
+
+
+
+```{r,eval=FALSE}
+
+#Sheet 2
+part3='muso_beneficiaries '
+df_muso_men2<-read_excel(paste(part1,part3,sep="",Sys.Date(),".xlsx"),sheet = 1)%>%
+  select(patient_code,caseid)
+
+df_muso_men2<-left_join(df_muso_men1,df_muso_men2,by='caseid')
+#Replace NA's with empty string
+df_muso_men2$form.household_muso.health_id[is.na(df_muso_men2$form.household_muso.health_id)]<-'empty'
+
+#Rename relevant columns
+df_muso_men2<-df_muso_men2%>%
+  rename(`code MUSO associé`=form.household_muso.health_id)%>%
+  rename(dob=form.household_muso.generale_information.dob)%>%
+  rename(gender=	
+form.household_muso.generale_information.gender)%>%
+  rename(relationship=
+form.household_muso.generale_information.muso_member_relationship)%>%
+  rename(`age in year`=form.household_muso.generale_information.age_in_year)%>%
+  rename(`household name`=
+form.household_muso.generale_information.name)%>%
+  rename(`case id`=`form.household_muso.case.@case_id`)
+
+df_men2<-df_muso_men2%>%
+  select(`household name`,dob,`age in year`,gender,`code MUSO associé`,relationship,`case id`)
+
+compt_df_men2<-df_men2%>%
+  filter(!`code MUSO associé` %in% c('---','empty'))
+
+```
+
+
+
+
+
+```{r}
+d<-cut(Sys.Date(), breaks = 'week', start.on.monday = F)
+d<-as.Date(d)
+prev<-floor_date(d-1, "week",1)
+after<-prev+4
+```
+
+
+
+
+
+```{r}
+
+df_men_perf<-df_men1%>%
+  group_by(started_time)%>%
+  count()
+
+eff_sem_ec<-df_men_perf%>%
+  filter(started_time>= prev & started_time<=after)
+
+```
+
+
+
+### **OVERVIEW**
+
+Du `r a` au `r Sys.Date()`, `r b` comptages de ménage ont été ajoutés sur CommCare.
+Quant à la semaine écoulée (du `r prev` au `r after`), `r sum(eff_sem_ec$n)` ont été ajoutés à raison de `r round(sum(eff_sem_ec$n)/5,0)` en moyenne par jour.
+
+
+
+
+### **1. Performance des agents de MUSO à travers le temps (du `r a` au `r Sys.Date()`)**
+
+
+```{r,fig.width=9}
+ggplotly(df_men_perf %>%
+           ggplot(aes(x = started_time, y = n),fill="#00AFBB")+
+           geom_line(stat = "identity", 
+                     color= "#00AFBB",size=0.5) +
+           geom_point() +
+           ylab("Performance per day") +
+           xlab("Date") +
+           theme_classic()+
+            labs(caption=paste("Data source: CommCare",sep = " / ", Sys.Date()))+
+           theme(
+             axis.title.x = element_text(family="Cambria",size=9),
+             axis.title.y = element_text(family="Cambria",size=9)))
+```
+
+
+ 
+
+
+### **2.Clustering des agents par bureau (du `r a` au `r Sys.Date()`)**
+
+```{r,fig.dim=c(9,7)}
+df_perf<-df_men1%>%
+  group_by(data_office,name)%>%
+  count()%>%
+  drop_na()
+
+
+d1=data.frame(from="origin", to=df_perf$data_office)
+d2=data.frame(from=d1$to, to=df_perf$name)
+edges=rbind(d1, d2)
+
+name= unique(c(as.character(edges$from), as.character(edges$to)))
+
+vertices = data.frame(
+  name, 
+  value = c(NA,NA,NA,NA,NA,NA, NA, NA,df_perf$n)
+) 
+
+
+vertices$group = edges$from[ match( vertices$name, edges$to ) ]
+
+
+
+vertices$id=NA
+myleaves=which(is.na( match(vertices$name, edges$from) ))
+nleaves=length(myleaves)
+vertices$id[ myleaves ] = seq(1:nleaves)
+
+# adjust angle calculation
+vertices$angle = 360 / nleaves * vertices$id + 110  
+
+# adjust hjust
+vertices$hjust<-ifelse( vertices$angle < 290, 1, 0) 
+
+# adjust where 180 is added
+vertices$angle<-ifelse(vertices$angle < 290, vertices$angle+180, vertices$angle) 
+
+mygraph <- graph_from_data_frame(edges, vertices=vertices)
+
+
+ggraph(mygraph, layout = 'dendrogram', circular = TRUE) + 
+  geom_edge_diagonal(colour="grey") +
+  scale_edge_colour_distiller(palette = "dark2") +
+  geom_node_text(aes(x = x*1.10, y=y*1.10, filter = leaf, label=name, angle = angle, hjust=hjust, colour=group), size=3.5, alpha=1) +
+  geom_node_point(aes(filter = leaf, x = x*1.07, y=y*1.07, colour=group, size=value, alpha=0.2)) +
+  scale_colour_manual(values= rep( brewer.pal(9,"Paired") , 30)) +
+  scale_size_continuous(range = c(0.1,10) ) +
+  coord_flip()+
+  theme_void() +
+  theme(
+    legend.position="none",
+    plot.margin=unit(c(0,0,0,0),"cm"),
+  ) +
+    labs(caption=paste("Data source: CommCare",sep = " / ", Sys.Date()))+
+  expand_limits(x = c(-1.3, 1.3), y = c(-1.3, 1.3)) +
+  theme(
+    panel.background = element_rect(fill = "black", colour = "black",
+                                    size = 3, linetype = "solid"))
+    
+
+```
+
+
+***Note***: Le graphe ci-dessous est un **Dendogramme** circulaire basé sur la *Network theory*. Il nous permet de représenter l'ensemble des agents regoupés par bureau sous forme de grappes (ou clusters). Chaque nuance de couleur represente un bureau donné. Chaque boule située à l'issue d'un cluster représente la performance d'un agent affecté au bureau en question. Et notez que la taille de chaque boule donne une certaine idée quantitative de la performance relative de l'agent. Autrement dit, plus l'agent est performant, plus la boule est grande. L'inverse est aussi vraie, c'est-à-dire moins l'agent est performant, moins la boule est grande.
+
+
+
+### **3. Performance des agents suivant le bureau (du `r a` au `r Sys.Date()`)**
+
+```{r,fig.height=14,fig.width=9}
+
+df_men1$name[is.na(df_men1$name)]<-'---'
+df_men1$data_office[is.na(df_men1$data_office)]<-'---'
+df_men1$username[is.na(df_men1$username)]<-'---'
+df_men1$caseid[is.na(df_men1$caseid)]<-'---'
+
+x<-df_men1%>%
+  group_by(name,data_office)%>%
+  count()
+
+x%>%
+  ggplot(aes(x = reorder(name, n), y = n, fill = name)) +
+  geom_col(show.legend = FALSE) +
+  geom_label(aes(label =n, hjust = 0.5,vjust=0.5),color="white",size=2.8,show.legend =F)+
+  ylab("") +
+  xlab("") +
+  labs(caption=paste("Data source: CommCare",sep = " / ", Sys.Date()))+
+  coord_flip(y=c(0,max(x$n)+0.05*max(x$n))) +
+  facet_wrap(~data_office, ncol = 2, scales = "free_y")  +
+  ggtitle("")+
+  theme_bw()
+```
+
+
+
+
+
+
+
+
+### **4.Quantité moyenne de comptages de ménage ajoutée par jour par les agents durant la semaine écoulée (du `r prev` au `r after`)**
+
+***Note***: Seuls les agents ayant synchronisé CommCare la semaine dernière apparaissent sur le graphe ci-dessous.
+Puis, veuillez noter que les agents avec **0** comme moyenne ont synchronisé moins de 3 comptages de ménage durant la période.
+
+
+```{r,fig.height=14,fig.width=9}
+
+y<-df_men1%>%
+  filter(started_time>= prev & started_time<=after)%>%
+  group_by(name,data_office)%>%
+  count()%>%
+  mutate(mean=n/5)
+
+
+y%>%
+  ggplot(aes(x = reorder(name, mean), y = mean, fill = name)) +
+  geom_col(show.legend = FALSE) +
+  geom_label(aes(label =round(mean,0), hjust = 0.5,vjust=0.5),color="white",size=2.8,show.legend =F)+
+  ylab("") +
+  xlab("") +
+  labs(caption=paste("Data source: CommCare",sep = " / ", Sys.Date()))+
+  coord_flip(y=c(0,max(y$mean)+0.05*max(y$mean))) +
+  facet_wrap(~data_office, ncol = 2, scales = "free_y")  +
+  ggtitle("")+
+  theme_bw()
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### **Tableau 1 - Liste des agents MUSO avec leur réalisation et leur écart par rapport à leur responsabilité**
+
+
+
+
+```{r,eval=TRUE}
+data_muso<-left_join(x,lookup,by='name')%>%
+  rename(office=data_office.x, réalisation=n)%>%
+  select(username,name,office,`Nbre de groupe`,
+         `Nbre de membre Total dans les groupes`,réalisation)
+
+data_muso$`Nbre de groupe`<-as.numeric(data_muso$`Nbre de groupe`)
+data_muso$`Nbre de membre Total dans les groupes`<-as.numeric(data_muso$`Nbre de membre Total dans les groupes`)
+
+data_muso1<-data_muso%>%
+  mutate(`réalisation(pourcentage)`=paste0(round((réalisation/`Nbre de membre Total dans les groupes`)*100,2),'%'))
+
+datatable(data_muso1, filter = 'bottom', extensions = 'Buttons',
+          options = list(dom = 'Bfrtip',width="120px",
+                         columnDefs = list(list(className = 'dt-center', targets = "_all")),
+                         initComplete = JS(
+                           "function(settings, json) {",
+                           "$(this.api().table().header()).css({'background-color': '#0B1E2A', 'color': '#fff'});",
+                           "}"),
+                         buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),pageLength = 6))
+```
+
+
+
+
+
+
+
+```{r}
+### **4. Nombre de ménages restants à compter**
+#Menages restants
+part3='lookup_household_muso'
+part2='C:\\Users\\Lucainson Raymond\\Desktop\\lookup_caris\\'
+df_muso_men2<-read_excel(paste(part2,part3,sep="",".xlsx"),sheet = 1)%>%
+  select(name_members,patient_code,caseid,group_departement,is_inactive,graduated,is_abandoned,group_name)%>%
+  mutate(city=substr(patient_code,0,3))%>%
+  distinct(caseid, .keep_all = TRUE)
+
+df_men11<-df_men1%>%
+  select(-name)
+
+#join
+df_muso_men<-left_join(df_muso_men2,df_men11,by='caseid')%>%
+  select(-c(data_office,started_time))
+
+
+
+df_muso_men_x<-df_muso_men%>%
+  filter(is.na(username))%>%
+  select(-username)
+```
+
+
+
+
+
+
+
+```{r,eval=FALSE}
+#### **Distribution des ménages à compter suivant la ville**
+df_muso_men_x_graf<-df_muso_men_x%>%
+  group_by(city)%>%
+  count()
+
+df_muso_men_x_graf%>%
+  ggplot(aes(x = reorder(city, n), y = n,fill=city)) +
+  geom_col(show.legend = FALSE) +
+  geom_label(aes(label =n, hjust = 0.5,vjust=0.5),color='white',size=2.8,show.legend =F)+
+  ylab("") +
+  xlab("") +
+  labs(caption=paste("Data source: commcare",sep = " / ", Sys.Date()))+
+  coord_flip(y=c(0,max(df_muso_men_x_graf$n)+0.05*max(df_muso_men_x_graf$n))) +
+  ggtitle("")+
+  theme_bw()
+
+```
+
+
+
+
+
+
+
+```{r,eval=FALSE}
+#### **Tableau 2 - Liste des ménages de MUSO à compter**
+datatable(df_muso_men_x, filter = 'bottom', extensions = 'Buttons',
+          options = list(dom = 'Bfrtip',width="120px",
+                         columnDefs = list(list(className = 'dt-center', targets = "_all")),
+                         initComplete = JS(
+                           "function(settings, json) {",
+                           "$(this.api().table().header()).css({'background-color': '#0B1E2A', 'color': '#fff'});",
+                           "}"),
+                         buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),pageLength = 6))
+
+```
+
+
+
+
+```{r, include=FALSE}
+lapply(dbListConnections(MySQL()), dbDisconnect)
+```

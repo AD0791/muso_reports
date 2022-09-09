@@ -1,0 +1,438 @@
+---
+title: |
+   Rapport sur le nouveau comptage de MUSO
+
+subtitle: |
+  | Caris Foundation International | Impact Youth Project
+author: " Alexandro DISLA | Pierre R. CASSION | Davidson ADRIEN | Fannéty Guercin"
+date: '`r format(Sys.time(), "%d %B %Y")`'
+output: rmdformats::readthedown
+---
+
+
+
+<style>
+body{
+text-align: justify
+}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE, warning=FALSE)
+```
+
+
+
+```{r libraries}
+Sys.setenv(TZ='GMT')
+suppressPackageStartupMessages(library(RMySQL))
+suppressPackageStartupMessages(library(odbc))
+suppressPackageStartupMessages(library(DBI))
+suppressPackageStartupMessages(library(viridis))
+suppressPackageStartupMessages(library(ggrepel))
+suppressPackageStartupMessages(library(ggiraphExtra))
+suppressPackageStartupMessages(library(hrbrthemes))
+suppressPackageStartupMessages(library(plotly))
+suppressPackageStartupMessages(library(RColorBrewer))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(lubridate))
+suppressPackageStartupMessages(library(scales))
+suppressPackageStartupMessages(library(extrafont))
+suppressPackageStartupMessages(library(forcats))
+suppressPackageStartupMessages(library(DT))
+suppressPackageStartupMessages(library(data.table))
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(reticulate))
+suppressPackageStartupMessages(library(plotrix))
+suppressPackageStartupMessages(library(dygraphs))
+suppressPackageStartupMessages(library(xts))
+```
+
+
+
+
+```{r CommCare data}
+#OM DATA
+lookup<-read_excel('C:\\Users\\Fanety Guercin\\Documents\\IMPACT\\Scripts_R\\lookup_caris\\caris-test_users_muso.xlsx')%>%
+  select(username,name)
+
+#DATA FOR TRACKING PROGRESS
+compar<- read_excel('C:\\Users\\Fanety Guercin\\Documents\\IMPACT\\Scripts_R\\lookup_caris\\dt_muso.xlsx', sheet = 1)
+
+```
+
+
+
+```{r former script, eval = TRUE}
+inst=dbSendQuery(
+  dbConnect(MySQL(), user='caris_readonly', password='longlivecaris!', dbname='caris_db', host='mysql.hivhaiti.org'),
+  "SELECT 
+    be.first_name AS prenom,
+    be.last_name AS nom,
+    c.is_household_applicable as is_household_not_applicable,
+    age,
+    mh.sexe,
+    mh.arv,
+    mh.pos,
+    c.id_patient,
+    mh.test,
+    mh.often_sick,
+    mh.created_at,
+    mh.updated_at as date_update,
+    c.name as nom_groupe,
+    c.office,
+    au.email,
+    au.username,
+    p.muso_case_id as caseid
+FROM
+    muso_household_2022 AS mh
+    
+        LEFT JOIN
+    beneficiary be ON mh.id_patient = be.id_patient
+        LEFT JOIN
+    auth_users au ON mh.created_by = au.id
+        right JOIN
+    (SELECT 
+        mgm.id_patient, mgm.id_group, mg.name, mg.office, mg.code, mgm.is_household_applicable
+    FROM
+        muso_group_members mgm
+    LEFT JOIN muso_group mg ON mgm.id_group = mg.id) c ON c.id_patient = mh.id_patient
+    left join patient p on p.id=c.id_patient
+    where mh.id is not null or c.is_household_applicable = 'yes'")
+
+df_hivhaiti = fetch(inst, n =-1)
+
+```
+
+
+
+
+```{r}
+df_hivhaiti$username[is.na(df_hivhaiti$username)] = '---'
+df_hivhaiti$created_at[is.na(df_hivhaiti$created_at)] = '2022-06-30'
+
+df_hivhaiti$is_household_not_applicable[is.na(df_hivhaiti$is_household_not_applicable)] = 'no'
+df_hivhaiti$created_at<-as.Date(df_hivhaiti$created_at)
+df_hivhaiti$office[df_hivhaiti$office == 'BOM'] = 'PDP & BOM'
+df_hivhaiti$office[df_hivhaiti$office == 'PDP'] = 'PDP & BOM'
+
+a<-"2022-02-16"
+
+
+#TOTAL COMPTAGE SUR HIVHAITI
+c<-length(unique(df_hivhaiti$id_patient))
+```
+
+
+
+
+
+```{r}
+
+#DATA WRANGLING FOR COUNTING THE PAST WEEK
+d<-cut(Sys.Date(), breaks = 'week', start.on.monday = F)
+d<-as.Date(d)
+prev<-floor_date(d-1, "week",1)
+after<-prev+4
+```
+
+
+
+
+
+```{r}
+#DATA FROM HIVHAITI
+df_men_perf_hh1<-df_hivhaiti%>%
+  filter(is_household_not_applicable != 'yes')%>%
+  select(created_at)%>%
+  group_by(created_at)%>%
+  count()%>%
+  rename(timeEnd = created_at)
+
+
+df_men_perf_hh2<-df_hivhaiti%>%
+  filter(is_household_not_applicable == 'yes' & !is.na(age))%>%
+  select(created_at)%>%
+  group_by(created_at)%>%
+  count()%>%
+  rename(timeEnd = created_at)
+
+
+df_men_perf_hh<-rbind(df_men_perf_hh1,df_men_perf_hh2)
+
+
+#HIVHAITI
+eff_sem_ec_hh1<-df_hivhaiti%>%
+  filter(created_at>= prev & created_at<=after)%>%
+  select(id_patient)%>%
+  rename(case_id = id_patient)%>%
+  group_by(case_id)%>%
+  count()
+
+eff_sem_ec_hh1$case_id<-as.character(eff_sem_ec_hh1$case_id)
+
+eff_sem_ec_hh<-eff_sem_ec_hh1%>%
+  select(-n)
+  
+eff_sem_ec<-eff_sem_ec_hh
+
+
+##LESS THAN 18
+filtr_hh<-df_hivhaiti%>%
+  filter(is_household_not_applicable != 'yes')%>%
+  mutate(age_group = ifelse(age < 18, '<18',
+                            ifelse(age>18,'18+','NULL')))%>%
+  filter(age_group == '<18')%>%
+  select(age_group)
+
+
+prop_ib_18 = paste0(round(length(filtr_hh$age_group)/(sum(df_men_perf_hh$n))*100, 2), '%')
+```
+
+
+
+## **1. OVERVIEW**
+
+De `r a` à aujourd'hui (`r Sys.Date()`), `r c` comptages de ménage de MUSO ont été ajoutés sur hivhaiti et CommCare.
+Quant à la semaine écoulée (du `r prev` au `r after`), `r length(eff_sem_ec$case_id)` ont été ajoutés à raison de `r round(length(eff_sem_ec$case_id)/5,0)` en moyenne par jour. Au niveau des ménages déjà comptés, les < 18 représentent une proportion de  `r length(filtr_hh$age_group)` sur `r sum(df_men_perf_hh$n)` (soit `r prop_ib_18`) dans la population cible. Quant au ratio des bénéficiaires indirects de moins de 18 ans sur les bénéficiaires directs de MUSO, il est de `r round(length(filtr_hh$age_group)/c,2)` jusqu'ici.
+
+
+
+
+#### **Figure 1.1 - Evolution des ajouts de comptage de ménage de MUSO à travers le temps (du `r a` au `r Sys.Date()`)**
+
+
+***Note***: Le pic du 23 Mars 2022 marque le jour de la migration massive des données entrées via CommCare vers hivhaiti.
+
+
+```{r}
+
+df_1 = df_hivhaiti%>%
+  select(created_at, id_patient)%>%
+  group_by(created_at,id_patient)%>%
+  count()%>%
+  ungroup()%>%
+  group_by(created_at)%>%
+  summarise(n = sum(n))%>%
+  rename(timeEnd = created_at)
+
+# Since my time is currently a factor, I have to convert it to a date-time format!
+df_1$timeEnd <- ymd_hms(df_1$timeEnd)
+ 
+# Then you can create the xts necessary to use dygraph
+don <- xts(x = df_men_perf_hh$n, order.by = df_men_perf_hh$timeEnd)
+# Finally the plot
+  dygraph(don) %>%
+  dyOptions(labelsUTC = TRUE, fillGraph=TRUE, fillAlpha=0.1, drawGrid = FALSE, colors="darkmagenta") %>%
+  dyRangeSelector() %>%
+  dyCrosshair(direction = "vertical") %>%
+  dyHighlight(highlightCircleSize = 5, highlightSeriesBackgroundAlpha = 0.2, hideOnMouseOut = FALSE)  %>%
+  dyRoller(rollPeriod = 1)
+  
+```
+
+
+
+
+
+#### **Figure 1.2 - Progression des comptages de ménage dans les différents bureaux du projet**
+
+```{r}
+
+df_real_0<-df_hivhaiti%>%
+  distinct(id_patient, .keep_all = TRUE)%>%
+  select(office)
+
+df_real = df_real_0%>%
+  group_by(office)%>%
+  count()
+
+reste<-left_join(compar, df_real, by = 'office')
+reste$n.y[is.na(reste$n.y)]<-0
+reste<-reste%>%
+  mutate(freq = n.x - n.y)%>%
+  select(-c(n.x,n.y))%>%
+  mutate(type = 'reste')
+
+
+df_real<-df_real%>%
+  mutate(type = 'réalisation')%>%
+  rename(freq = n)
+df_real$office[is.na(df_real$office)]<-'---'
+
+df_compar<-rbind(reste,df_real)
+
+
+df_compar %>%
+  group_by(office)%>%
+  mutate(proc = (freq/sum(freq) * 100))%>%
+  ggplot(aes(fill=type, y=freq, x=reorder(office,-freq), show.legend = F))+ 
+  geom_bar(stat="identity",color="black", show.legend = T) +
+  geom_label(aes(label = paste(paste(format(freq,big.mark = ",")),sep=" ",
+                               paste("(",sep="",round(proc,0),"%)"))),
+             position =  position_stack(vjust = 0.5), show.legend = F,color='white', size=3)+
+  scale_fill_brewer(palette = "Dark2")+
+  coord_cartesian(ylim = c(-750,9800))+
+  theme_bw()+
+  labs(caption=paste("Data source: CommCare & hivhaiti",sep = " / ", Sys.Date()))+
+  theme(
+    plot.caption = element_text(face="italic",size = 8))+
+  xlab("")+
+  ylab("")
+
+```
+
+
+
+
+
+## **2. Informations sur les bénéficiaires comptés**
+
+#### **Figure 2.1 - Distribution par âge des bénéficiaires indirects de MUSO jusque-là comptés**
+
+```{r, eval=TRUE}
+
+age_hh<-df_hivhaiti%>%
+  select(age)%>%
+  drop_na()
+
+
+breaks <- quantile(age_hh$age,seq(0,1,by=0.1))
+
+hist(age_hh$age,
+main="",
+breaks=breaks,
+xlab="Age in year",
+xlim=c(min(age_hh$age),20),
+col="darkmagenta",
+freq=FALSE
+)
+
+```
+
+
+
+
+
+#### **Figure 2.2 - Distribution par sexe des bénéficiaires indirects de MUSO jusque-là comptés**
+
+```{r, fig.width=8}
+sexe_hh<-df_hivhaiti%>%
+  filter(is_household_not_applicable != 'yes')%>%
+  group_by(sexe)%>%
+  count()
+
+sexe_hh$sexe[sexe_hh$sexe=='Feminin']<-'Female'
+sexe_hh$sexe[sexe_hh$sexe=='F']<-'Female'
+sexe_hh$sexe[sexe_hh$sexe=='f']<-'Female'
+sexe_hh$sexe[sexe_hh$sexe=='Masculin']<-'Male'
+sexe_hh$sexe[sexe_hh$sexe=='M']<-'Male'
+sexe_hh$sexe[sexe_hh$sexe=='n']<-'Male'
+sexe_hh$sexe[sexe_hh$sexe=='nm']<-'Male'
+sexe_hh$sexe[sexe_hh$sexe=='m']<-'Male'
+sexe_hh$sexe[is.na(sexe_hh$sexe)]<-'Sex Missing'
+sexe_hh$sexe[sexe_hh$sexe == '']<-'Sex Missing'
+sexe_hh$sexe[sexe_hh$sexe=='8']<-'Sex Missing'
+sexe_hh$sexe[sexe_hh$sexe=='3']<-'Sex Missing'
+sexe_hh$sexe[sexe_hh$sexe=='6']<-'Sex Missing'
+sexe_hh$sexe[sexe_hh$sexe==',']<-'Sex Missing'
+sexe_hh$sexe[sexe_hh$sexe=='oui']<-'Sex Missing'
+sexe_hh$sexe[sexe_hh$sexe=='Oui']<-'Sex Missing'
+sexe_hh$sexe[sexe_hh$sexe=='Non']<-'Sex Missing'
+
+
+data1<-sexe_hh%>%
+  summarise(freq = sum(n))
+
+ggiraphExtra::ggDonut(data1,aes(donuts = sexe,count = freq),interactive=TRUE, alpha=5, reverse=F, palette = "Dark2")
+
+```
+
+
+
+
+
+#### **Figure 2.3 - Distribution du nombre de bénéficiaires dans les ménages**
+
+```{r, fig.width=9}
+
+taille_hh_x<-df_hivhaiti%>%
+  mutate(age_group = ifelse(age < 18, '<18',
+                            ifelse(age>18,'18+','NULL')))%>%
+  filter(age_group == '<18')%>%
+  filter(is_household_not_applicable !='yes')%>%
+  group_by(id_patient)%>%
+  count()%>%
+  rename(household_number_2022=n)%>%
+  ungroup()%>%
+  select(household_number_2022)
+
+taille_hh_y<-df_hivhaiti%>%
+  filter(is_household_not_applicable =='yes')%>%
+  group_by(id_patient)%>%
+  count()%>%
+  rename(household_number_2022=n)%>%
+  ungroup()%>%
+  select(household_number_2022)
+
+for(i in 1:nrow(taille_hh_y)){
+  if(taille_hh_y$household_number_2022[i]>0) {
+    taille_hh_y$household_number_2022[i] <- 0
+  }
+}
+
+
+hc1<-rbind(taille_hh_x,taille_hh_y)
+
+hc<-hc1%>%
+  group_by(household_number_2022)%>%
+  count()
+
+hc$household_number_2022=as.numeric(hc$household_number_2022)
+
+
+hc%>%
+  ggplot(aes(x=household_number_2022, y=n)) +
+  geom_histogram(stat="identity", fill="#0099a1", alpha=.6, width=.4) +
+  geom_label(aes(label =n, hjust = 0.5,vjust=0.5),size=2.8,show.legend =F)+
+  #geom_density() +
+  labs(caption=paste("Data source: hivhaiti",sep = " / ", Sys.Date()))+
+  xlab("Bénéficiaires <18") +
+  ylab("Fréquence")+
+  theme_bw()
+
+```
+
+
+
+#### **Verbatim output 2.1 - Test de normalité de la distribution du nombre de bénéficiaires de moins de 18 ans dans les ménages des membres de MUSO**
+
+**a. Hypothèses du test**
+
+* H0: Les données sont normalement distribuées
+* H1: Les données ne sont pas normalement distribuées
+
+
+**b. Statistiques du test**
+
+
+```{r}
+library(tseries)
+hc1$household_number_2022 = as.numeric(hc1$household_number_2022)
+ntest=jarque.bera.test(hc1$household_number_2022)
+ntest
+```
+
+
+
+**c. Décision du test**
+
+Le test de normalité de Bera-Jarque indique que la statistique de test est de `r ntest$statistic`, avec une P-valeur proche de `r ntest$p.value`. Nous ne pouvons donc pas accepter l'hypothèse nulle selon laquelle les données sont normalement distribuées dans cette circonstance.
+
+Ainsi, nous avons suffisamment de preuves pour conclure que les données dans ce scénario ne sont pas normalement distribuées.
+
+
+
+
+
