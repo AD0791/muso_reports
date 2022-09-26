@@ -109,7 +109,7 @@ driver.find_element(By.XPATH,'//*[@id="download-progress"]/div/div/div[2]/div[1]
 
 
 
-```{r instrumentatlisation, eval=TRUE}
+```{r instrumentatlisation, eval=FALSE}
 #Defining date
 start_date = '2021-07-01'
 end_date = '2021-09-30'
@@ -614,6 +614,11 @@ df_muso2<-df_muso%>%
 #    strip.text = element_text(size = 12))+
 #  xlab("")+
 #  ylab("")
+
+
+
+df_muso$office_name = ifelse(df_muso$office_name=="---",df_muso$office,df_muso$office_name)
+
 
 df_muso%>%
   filter(!is.na(code_GPS))%>%
