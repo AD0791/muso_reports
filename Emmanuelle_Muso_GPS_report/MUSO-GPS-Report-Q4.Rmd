@@ -2,7 +2,7 @@
 title: "Tracking des coordonnées GPS des groupes actifs de MUSO"
 subtitle: |
   | Caris Foundation International | Impact Youth Project
-author: "Alexandro DISLA | M&E Officer"
+author: "Alexandro DISLA | M&E Officer & Lucainson Raymond | M&E Officer"
 date: '`r format(Sys.time(), "%d %B %Y")`'
 output: 
   prettydoc::html_pretty:
