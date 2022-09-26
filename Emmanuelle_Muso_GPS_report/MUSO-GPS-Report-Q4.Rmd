@@ -674,7 +674,7 @@ split_coord1<-split_coord%>%
 
 leaflet(split_coord1,
         options = leafletOptions(zoomControl = TRUE,
-                                 minZoom = 8.3, maxZoom = 15)) %>%
+                                 minZoom = 3.3, maxZoom = 15)) %>%
   addTiles() %>%
  addCircles(radius = ~10^3/10, weight = 3, color = "#777777", fillOpacity = 1, 
             popup = ~paste0(commune_name," | ",name, " | ", "GPS: ", gps))%>%
